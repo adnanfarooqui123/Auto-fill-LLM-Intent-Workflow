@@ -1,0 +1,1081 @@
+// ==UserScript==
+// @name         LLM Intent, Workflow & Sub-Intent Auto-Fill
+// @namespace    http://tampermonkey.net/
+// @version      15.0
+// @description  STRICT: Popup ONLY on "No" radio click — uses exact question labels
+// @match        https://abc-mlops.beta.harmony.a2z.com/*
+// @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ═══════════════════════════════════════════════
+    //  STORAGE HELPERS
+    // ═══════════════════════════════════════════════
+
+    function getCustomOptions(key) {
+        try {
+            const stored = localStorage.getItem('tm_custom_' + key);
+            return stored ? JSON.parse(stored) : [];
+        } catch (e) { return []; }
+    }
+
+    function saveCustomOptions(key, options) {
+        localStorage.setItem('tm_custom_' + key, JSON.stringify(options));
+    }
+
+    function removeCustomOption(key, value) {
+        let customs = getCustomOptions(key);
+        customs = customs.filter(o => o !== value);
+        saveCustomOptions(key, customs);
+    }
+
+    // ═══════════════════════════════════════════════
+    //  QUESTION DEFINITIONS — matched by LABEL TEXT
+    //  These are the EXACT texts shown on the page
+    // ═══════════════════════════════════════════════
+
+    const QUESTION_MAP = [
+        {
+            key: 'llmIntent',
+            type: 'simple',
+            // Texts to search for in the question label
+            labelTexts: [
+                'llmintent validation',
+                'is the llmintent accurate',
+                'llmintent accurate'
+            ]
+        },
+        {
+            key: 'llmWorkflow',
+            type: 'simple',
+            labelTexts: [
+                'llmworkflow validation',
+                'is the llmworkflow accurate',
+                'llmworkflow accurate'
+            ]
+        },
+        {
+            key: 'subIntent',
+            type: 'twostep',
+            labelTexts: [
+                'offline sub intent validation',
+                'is the offline sub intent accurate',
+                'offline sub intent accurate',
+                'sub intent validation'
+            ]
+        }
+    ];
+
+    // ═══════════════════════════════════════════════
+    //  SIMPLE CONFIGS
+    // ═══════════════════════════════════════════════
+
+    const SIMPLE_CONFIGS = {
+        llmIntent: {
+            pickerTitle: '📋 Select Accurate llmIntent',
+            fieldPlaceholder: 'correct llmIntent',
+            fieldLabel: 'Accurate llmIntent',
+            options: [
+                'abfeatures_static_help',
+                'savings_agent',
+                'order_related_help',
+                'customer_service',
+                'out_of_scope',
+                'need_more_info',
+                'general_business_support',
+                'greeting',
+                'conclude_chat',
+                'language_guardrails_hit',
+                'triggered_guardrail'
+            ]
+        },
+        llmWorkflow: {
+            pickerTitle: '📋 Select Accurate llmWorkflow',
+            fieldPlaceholder: 'correct llmWorkflow',
+            fieldLabel: 'Accurate llmWorkflow',
+            options: [
+                'greeting',
+                'understand_customer_question',
+                'route_to_CS',
+                'route_to_CSAI',
+                'abfeature_response_using_knowledge_base',
+                'abfeature_response_outside_knowledge_base',
+                'conclude_conversation',
+                'out_of_scope',
+                'general_AB_support',
+                'triggered_guardrail',
+                'savings_agent_data_driven',
+                'language_guardrails_hit',
+                'concise_recommend_business_prime_plan'
+            ]
+        }
+    };
+
+    const HVA_MAP = {
+        'Single Sign On (SSO)': [
+            'SSO: What is it/Benefits overview',
+            'SSO: Setup and configuration',
+            'SSO: Login/authentication issues',
+            'SSO: Add/manage users',
+            'SSO: Integration problems (IdP, Account Authority)',
+            'SSO: Disable or remove SSO',
+            'SSO: Other issues'
+        ],
+        'Subscribe & Save': [
+            'Subscribe & Save: What is it/Benefits overview',
+            'Subscribe & Save: Set up subscription',
+            'Subscribe & Save: Modify subscription (frequency/quantity)',
+            'Subscribe & Save: Cancel or skip delivery',
+            'Subscribe & Save: Discounts and pricing',
+            'Subscribe & Save: Payment issues (PBI integration)',
+            'Subscribe & Save: Other issues'
+        ],
+        'Account Authority': [
+            'Account Authority: What is it/Benefits overview',
+            'Account Authority: Setup and domain verification',
+            'Account Authority: Consolidate/manage accounts',
+            'Account Authority: User permissions',
+            'Account Authority: Spending visibility',
+            'Account Authority: Disable or remove',
+            'Account Authority: Other issues',
+            'Account Authority: Linking/Unlinking Accounts'
+        ],
+        'Business Order Information (BOI)': [
+            'BOI: What is it/Benefits overview',
+            'BOI: Configure fields and dropdowns',
+            'BOI: Cost center/project codes setup',
+            'BOI: Make fields required/optional',
+            'BOI: Reporting and data export',
+            'BOI: Integration issues',
+            'BOI: Other issues',
+            'BOI: Delivery related / preferences'
+        ],
+        'Custom Quotes': [
+            'Custom Quotes: What is it/Benefits overview',
+            'Custom Quotes: Check eligibility ($10k/999 units)',
+            'Custom Quotes: Request a quote',
+            'Custom Quotes: Track/manage quotes',
+            'Custom Quotes: Accept or negotiate pricing',
+            'Custom Quotes: Seller issues',
+            'Custom Quotes: Other issues'
+        ],
+        '3-Way Match': [
+            '3-Way Match: What is it/Benefits overview',
+            '3-Way Match: Setup and configuration',
+            '3-Way Match: Confirm deliveries',
+            '3-Way Match: Invoice reconciliation issues',
+            '3-Way Match: Mobile app usage',
+            '3-Way Match: Reports and audit trail',
+            '3-Way Match: Other issues'
+        ],
+        'Business Lists': [
+            'Business Lists: What is it/Benefits overview',
+            'Business Lists: Create and manage lists',
+            'Business Lists: Share lists with team',
+            'Business Lists: Add/remove items',
+            'Business Lists: Bulk ordering from lists',
+            'Business Lists: Integration with policies',
+            'Business Lists: Other issues'
+        ],
+        'ATEP (Tax Exemption)': [
+            'ATEP: What is it/Benefits overview',
+            'ATEP: Check eligibility (nonprofit/gov/edu/reseller)',
+            'ATEP: Upload/manage certificates',
+            'ATEP: Tax not exempted (troubleshooting)',
+            'ATEP: Certificate renewal/expiration',
+            'ATEP: Multi-state setup',
+            'ATEP: Other issues'
+        ],
+        'Pay by Invoice (PBI)': [
+            'PBI: What is it/Benefits overview',
+            'PBI: Check eligibility/credit approval',
+            'PBI: Payment terms and credit limits',
+            'PBI: Make a payment',
+            'PBI: Overdue/billing issues',
+            'PBI: Integration with other features',
+            'PBI: Payment methods',
+            'PBI: Other issues'
+        ],
+        'Guided Buying': [
+            'Guided Buying: What is it/Benefits overview',
+            'Guided Buying: Check eligibility (Prime requirement)',
+            'Guided Buying: Create/modify policies',
+            'Guided Buying: Approval workflows',
+            'Guided Buying: Policy not working (troubleshooting)',
+            'Guided Buying: Spending limits and restrictions',
+            'Guided Buying: Other issues'
+        ],
+        'Business Prime': [
+            'Business Prime: What is it/Benefits overview',
+            'Business Prime: Choose/compare plans',
+            'Business Prime: Sign up or upgrade',
+            'Business Prime: Cancel or downgrade',
+            'Business Prime: Spend visibility/analytics',
+            'Business Prime: Extended features (PBI terms, Guided Buying)',
+            'Business Prime: Billing and renewal',
+            'Business Prime: Account status',
+            'Business Prime: Non profit organisations',
+            'Business Prime: Other issues'
+        ],
+        'General Amazon Business': [
+            'General Amazon Business: What is it/Benefits overview',
+            'General Amazon Business: Account registration/setup',
+            'General Amazon Business: Check eligibility for business account',
+            'General Amazon Business: User management and permissions',
+            'General Amazon Business: Billing and invoicing',
+            'General Amazon Business: Analytics and reporting',
+            'General Amazon Business: Integration (ERP/procurement systems)',
+            'General Amazon Business: Feature not working (general troubleshooting)',
+            'General Amazon Business: Other account issues'
+        ],
+        'Quantity Discounts': [
+            'Quantity Discounts: What is it/Benefits',
+            'Quantity Discounts: Quantity Requirements',
+            'Quantity Discounts: Purchase Conditions',
+            'Quantity Discounts: Seller confirmations'
+        ],
+        'Add User': [
+            'Manage users',
+            'Add user: User roles and permissions'
+        ]
+    };
+
+    // ═══════════════════════════════════════════════
+    //  STYLES
+    // ═══════════════════════════════════════════════
+
+    GM_addStyle(`
+        #tm-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5); z-index: 99998; display: none;
+        }
+        .tm-picker {
+            position: fixed; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: #fff; border: 2px solid #0073bb;
+            border-radius: 10px; padding: 20px; z-index: 99999;
+            display: none; box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+            min-width: 440px; max-height: 80vh; overflow-y: auto;
+            font-family: Arial, sans-serif;
+        }
+        .tm-picker h3 {
+            margin: 0 0 12px; font-size: 15px; color: #0073bb;
+            border-bottom: 1px solid #ddd; padding-bottom: 8px;
+        }
+        .tm-picker .tm-search {
+            width: 100%; padding: 8px 10px; margin-bottom: 10px;
+            border: 1px solid #ccc; border-radius: 6px;
+            font-size: 13px; box-sizing: border-box;
+        }
+        .tm-picker .tm-search:focus {
+            outline: none; border-color: #0073bb;
+            box-shadow: 0 0 0 2px rgba(0,115,187,0.2);
+        }
+        .tm-picker .tm-opt-row {
+            display: flex; align-items: center; gap: 6px; margin-bottom: 5px;
+        }
+        .tm-picker .tm-opt {
+            flex: 1; padding: 9px 12px; background: #f4f6f8;
+            border: 1px solid #d5dbdb; border-radius: 6px;
+            cursor: pointer; text-align: left; font-size: 13px;
+            color: #16191f; box-sizing: border-box;
+        }
+        .tm-picker .tm-opt:hover { background: #0073bb; color: #fff; border-color: #0073bb; }
+        .tm-picker .tm-opt-custom { background: #fef8e7; border-color: #f5a623; }
+        .tm-picker .tm-opt-custom:hover { background: #f5a623; color: #fff; }
+        .tm-picker .tm-del-btn {
+            padding: 6px 10px; background: #ff4d4d; color: #fff;
+            border: none; border-radius: 6px; cursor: pointer;
+            font-size: 14px; font-weight: bold; line-height: 1;
+            flex-shrink: 0;
+        }
+        .tm-picker .tm-del-btn:hover { background: #cc0000; }
+        .tm-picker .tm-cancel {
+            display: block; width: 100%; padding: 9px 12px;
+            margin-top: 8px; background: #d13212; color: #fff;
+            border: none; border-radius: 6px; cursor: pointer;
+            font-size: 13px; font-weight: bold; box-sizing: border-box;
+        }
+        .tm-picker .tm-cancel:hover { background: #a82a10; }
+        .tm-picker .tm-hide { display: none !important; }
+        .tm-picker .tm-back {
+            display: block; width: 100%; padding: 9px 12px;
+            margin-top: 8px; background: #545b64; color: #fff;
+            border: none; border-radius: 6px; cursor: pointer;
+            font-size: 13px; font-weight: bold; box-sizing: border-box;
+        }
+        .tm-picker .tm-back:hover { background: #3d4148; }
+        .tm-picker .tm-step-label {
+            font-size: 11px; color: #879596; margin-bottom: 8px;
+            text-transform: uppercase; letter-spacing: 1px;
+        }
+        .tm-picker .tm-hva-badge {
+            display: inline-block; background: #e7f4ff; color: #0073bb;
+            padding: 4px 10px; border-radius: 12px; font-size: 12px;
+            margin-bottom: 10px; font-weight: bold;
+        }
+        .tm-add-section {
+            margin-top: 10px; padding-top: 10px; border-top: 1px dashed #ccc;
+        }
+        .tm-add-row { display: flex; gap: 6px; align-items: center; }
+        .tm-add-input {
+            flex: 1; padding: 8px 10px; border: 1px solid #ccc;
+            border-radius: 6px; font-size: 13px; box-sizing: border-box;
+        }
+        .tm-add-input:focus {
+            outline: none; border-color: #1d8102;
+            box-shadow: 0 0 0 2px rgba(29,129,2,0.2);
+        }
+        .tm-add-btn {
+            padding: 8px 16px; background: #1d8102; color: #fff;
+            border: none; border-radius: 6px; cursor: pointer;
+            font-size: 13px; font-weight: bold; white-space: nowrap;
+        }
+        .tm-add-btn:hover { background: #168001; }
+        .tm-add-label {
+            font-size: 12px; color: #1d8102; margin-bottom: 6px; font-weight: bold;
+        }
+        .tm-custom-label {
+            font-size: 11px; color: #879596; margin: 8px 0 4px;
+            text-transform: uppercase; letter-spacing: 1px;
+            border-top: 1px dashed #ddd; padding-top: 8px;
+        }
+        #tm-badge {
+            position: fixed; bottom: 15px; right: 15px;
+            background: #0073bb; color: #fff; padding: 8px 16px;
+            border-radius: 20px; font-size: 12px; z-index: 99997;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            font-family: Arial, sans-serif; cursor: default;
+        }
+        .tm-confirm-overlay {
+            position: fixed; top:0; left:0; right:0; bottom:0;
+            background: rgba(0,0,0,0.6); z-index: 100001;
+            display:flex; align-items: center; justify-content: center;
+        }
+        .tm-confirm-box {
+            background: #fff; border-radius: 10px; padding: 24px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+            min-width: 340px; font-family: Arial; text-align: center;
+        }
+        .tm-confirm-box h4 { margin: 0 0 8px; color: #d13212; font-size: 16px; }
+        .tm-confirm-box p { margin: 0 0 16px; font-size: 13px; color: #545b64; }
+        .tm-confirm-box .tm-confirm-val {
+            background: #fef8e7; padding: 6px 12px; border-radius: 6px;
+            font-weight: bold; color: #16191f; display: inline-block;
+            margin-bottom: 12px; font-size: 13px;
+        }
+        .tm-confirm-btns { display: flex; gap: 10px; justify-content: center; }
+        .tm-confirm-btns button {
+            padding: 8px 24px; border: none; border-radius: 6px;
+            font-size: 13px; font-weight: bold; cursor: pointer;
+        }
+        .tm-confirm-yes { background: #d13212; color: #fff; }
+        .tm-confirm-yes:hover { background: #a82a10; }
+        .tm-confirm-no { background: #e8e8e8; color: #16191f; }
+        .tm-confirm-no:hover { background: #d0d0d0; }
+        #tm-debug {
+            position: fixed; bottom: 50px; right: 15px;
+            background: #1a1a2e; color: #0f0;
+            padding: 10px 14px; border-radius: 8px;
+            font-size: 11px; z-index: 99997;
+            font-family: monospace; max-width: 420px;
+            max-height: 250px; overflow-y: auto;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            display: none; white-space: pre-wrap; word-break: break-all;
+        }
+    `);
+
+    // ═══════════════════════════════════════════════
+    //  UI ELEMENTS
+    // ═══════════════════════════════════════════════
+
+    const badge = document.createElement('div');
+    badge.id = 'tm-badge';
+    badge.textContent = '🟢 TM v15 Active';
+    document.body.appendChild(badge);
+
+    const debugPanel = document.createElement('div');
+    debugPanel.id = 'tm-debug';
+    document.body.appendChild(debugPanel);
+
+    let debugLines = [];
+    function debugLog(msg) {
+        console.log('[TM]', msg);
+        debugLines.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
+        if (debugLines.length > 50) debugLines.shift();
+        debugPanel.textContent = debugLines.join('\n');
+        debugPanel.scrollTop = debugPanel.scrollHeight;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'tm-overlay';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', hideAllPickers);
+
+    // ═══════════════════════════════════════════════
+    //  DELETE CONFIRMATION
+    // ═══════════════════════════════════════════════
+
+    function showDeleteConfirm(value, onConfirm) {
+        const el = document.createElement('div');
+        el.className = 'tm-confirm-overlay';
+        el.innerHTML = `
+            <div class="tm-confirm-box">
+                <h4>🗑️ Delete Custom Option?</h4>
+                <div class="tm-confirm-val">${value}</div>
+                <p>This will permanently remove this custom option.</p>
+                <div class="tm-confirm-btns">
+                    <button class="tm-confirm-yes">🗑️ Delete</button>
+                    <button class="tm-confirm-no">Cancel</button>
+                </div>
+            </div>`;
+        document.body.appendChild(el);
+        el.querySelector('.tm-confirm-yes').onclick = () => { el.remove(); onConfirm(); };
+        el.querySelector('.tm-confirm-no').onclick = () => el.remove();
+    }
+
+    // ═══════════════════════════════════════════════
+    //  SIMPLE PICKERS (llmIntent + llmWorkflow)
+    // ═══════════════════════════════════════════════
+
+    const simplePickers = {};
+
+    function buildSimplePicker(key) {
+        const config = SIMPLE_CONFIGS[key];
+        const customOpts = getCustomOptions(key);
+        const allOptions = [...config.options, ...customOpts];
+
+        const old = document.getElementById(`tm-picker-${key}`);
+        if (old) old.remove();
+
+        const picker = document.createElement('div');
+        picker.className = 'tm-picker';
+        picker.id = `tm-picker-${key}`;
+
+        let html = `<h3>${config.pickerTitle}</h3>`;
+        html += `<input type="text" class="tm-search" placeholder="🔍 Search..." />`;
+
+        config.options.forEach(opt => {
+            html += `<div class="tm-opt-row" data-search="${opt.toLowerCase()}">`;
+            html += `<button class="tm-opt tm-select-opt" data-val="${opt}">${opt}</button></div>`;
+        });
+
+        if (customOpts.length > 0) {
+            html += `<div class="tm-custom-label">⭐ Custom Options</div>`;
+            customOpts.forEach(opt => {
+                html += `<div class="tm-opt-row" data-search="${opt.toLowerCase()}">`;
+                html += `<button class="tm-opt tm-opt-custom tm-select-opt" data-val="${opt}">⭐ ${opt}</button>`;
+                html += `<button class="tm-del-btn" data-del="${opt}" title="Delete">✕</button></div>`;
+            });
+        }
+
+        html += `<div class="tm-add-section"><div class="tm-add-label">➕ Add Custom Option</div>`;
+        html += `<div class="tm-add-row"><input type="text" class="tm-add-input" placeholder="Type new option..." />`;
+        html += `<button class="tm-add-btn">ADD</button></div></div>`;
+        html += `<button class="tm-cancel">✖ Cancel</button>`;
+        picker.innerHTML = html;
+        document.body.appendChild(picker);
+
+        const searchBox = picker.querySelector('.tm-search');
+        const optRows = picker.querySelectorAll('.tm-opt-row');
+
+        searchBox.addEventListener('input', function () {
+            const q = this.value.toLowerCase();
+            optRows.forEach(row => row.classList.toggle('tm-hide', !row.dataset.search.includes(q)));
+        });
+
+        picker.querySelector('.tm-cancel').addEventListener('click', hideAllPickers);
+
+        picker.querySelectorAll('.tm-select-opt').forEach(btn => {
+            btn.addEventListener('click', function () {
+                const val = this.dataset.val;
+                setTimeout(() => {
+                    const input = findFieldByConfig(config);
+                    if (input) {
+                        smartFill(input, val);
+                        hideAllPickers();
+                        showToast(`✅ ${key}: ${val}`);
+                    } else {
+                        alert(`❌ Cannot find "${config.fieldLabel}" input!`);
+                    }
+                }, 300);
+            });
+        });
+
+        picker.querySelectorAll('.tm-del-btn').forEach(btn => {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                const val = this.dataset.del;
+                showDeleteConfirm(val, () => {
+                    removeCustomOption(key, val);
+                    showToast(`🗑️ Deleted: ${val}`);
+                    buildSimplePicker(key);
+                    setTimeout(() => showSimplePicker(key), 100);
+                });
+            });
+        });
+
+        const addInput = picker.querySelector('.tm-add-input');
+        const addBtn = picker.querySelector('.tm-add-btn');
+        function addCustom() {
+            const v = addInput.value.trim();
+            if (!v) return;
+            if (allOptions.includes(v)) { showToast('⚠️ Already exists!'); return; }
+            const c = getCustomOptions(key); c.push(v); saveCustomOptions(key, c);
+            showToast(`✅ Added: ${v}`);
+            buildSimplePicker(key);
+            setTimeout(() => showSimplePicker(key), 100);
+        }
+        addBtn.addEventListener('click', addCustom);
+        addInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } });
+
+        simplePickers[key] = { picker, searchBox };
+    }
+
+    Object.keys(SIMPLE_CONFIGS).forEach(key => buildSimplePicker(key));
+
+    // ═══════════════════════════════════════════════
+    //  SUB-INTENT TWO-STEP PICKER
+    // ═══════════════════════════════════════════════
+
+    const subIntentPicker = document.createElement('div');
+    subIntentPicker.className = 'tm-picker';
+    subIntentPicker.id = 'tm-picker-subintent';
+    document.body.appendChild(subIntentPicker);
+
+    function renderHVAStep() {
+        const hvaKeys = Object.keys(HVA_MAP);
+        const customHVAs = getCustomOptions('hva_categories');
+        const allHVAs = [...hvaKeys, ...customHVAs];
+
+        let html = `<h3>📋 Offline Sub Intent — Step 1</h3>`;
+        html += `<div class="tm-step-label">Step 1 of 2 — Select HVA Category</div>`;
+        html += `<input type="text" class="tm-search" placeholder="🔍 Search HVA..." />`;
+
+        hvaKeys.forEach(hva => {
+            html += `<div class="tm-opt-row" data-search="${hva.toLowerCase()}">`;
+            html += `<button class="tm-opt tm-hva-opt" data-hva="${hva}">📁 ${hva}</button></div>`;
+        });
+
+        if (customHVAs.length > 0) {
+            html += `<div class="tm-custom-label">⭐ Custom HVA Categories</div>`;
+            customHVAs.forEach(hva => {
+                html += `<div class="tm-opt-row" data-search="${hva.toLowerCase()}">`;
+                html += `<button class="tm-opt tm-opt-custom tm-hva-opt" data-hva="${hva}">⭐📁 ${hva}</button>`;
+                html += `<button class="tm-del-btn tm-del-hva" data-del="${hva}">✕</button></div>`;
+            });
+        }
+
+        html += `<div class="tm-add-section"><div class="tm-add-label">➕ Add Custom HVA</div>`;
+        html += `<div class="tm-add-row"><input type="text" class="tm-add-input tm-add-hva" placeholder="Type new HVA..." />`;
+        html += `<button class="tm-add-btn tm-add-hva-btn">ADD</button></div></div>`;
+        html += `<button class="tm-cancel">✖ Cancel</button>`;
+        subIntentPicker.innerHTML = html;
+
+        const searchBox = subIntentPicker.querySelector('.tm-search');
+        searchBox.addEventListener('input', function () {
+            const q = this.value.toLowerCase();
+            subIntentPicker.querySelectorAll('.tm-opt-row').forEach(r =>
+                r.classList.toggle('tm-hide', !r.dataset.search.includes(q)));
+        });
+
+        subIntentPicker.querySelector('.tm-cancel').addEventListener('click', hideAllPickers);
+
+        subIntentPicker.querySelectorAll('.tm-hva-opt').forEach(btn => {
+            btn.addEventListener('click', function () { renderSubIntentStep(this.dataset.hva); });
+        });
+
+        subIntentPicker.querySelectorAll('.tm-del-hva').forEach(btn => {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                const hva = this.dataset.del;
+                showDeleteConfirm(hva, () => {
+                    removeCustomOption('hva_categories', hva);
+                    delete HVA_MAP[hva];
+                    localStorage.removeItem('tm_custom_si_' + hva);
+                    showToast(`🗑️ Deleted HVA: ${hva}`);
+                    renderHVAStep();
+                });
+            });
+        });
+
+        const addInput = subIntentPicker.querySelector('.tm-add-hva');
+        const addBtn = subIntentPicker.querySelector('.tm-add-hva-btn');
+        function addHVA() {
+            const v = addInput.value.trim();
+            if (!v) return;
+            if (allHVAs.includes(v)) { showToast('⚠️ Already exists!'); return; }
+            const c = getCustomOptions('hva_categories'); c.push(v); saveCustomOptions('hva_categories', c);
+            if (!HVA_MAP[v]) HVA_MAP[v] = [];
+            showToast(`✅ Added HVA: ${v}`);
+            renderHVAStep();
+        }
+        addBtn.addEventListener('click', addHVA);
+        addInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addHVA(); } });
+        setTimeout(() => searchBox.focus(), 100);
+    }
+
+    function renderSubIntentStep(hva) {
+        const builtIn = HVA_MAP[hva] || [];
+        const custom = getCustomOptions('si_' + hva);
+        const all = [...builtIn, ...custom];
+
+        let html = `<h3>📋 Offline Sub Intent — Step 2</h3>`;
+        html += `<div class="tm-step-label">Step 2 of 2 — Select Sub Intent</div>`;
+        html += `<div class="tm-hva-badge">📁 ${hva}</div>`;
+        html += `<input type="text" class="tm-search" placeholder="🔍 Search sub-intents..." />`;
+
+        builtIn.forEach(si => {
+            html += `<div class="tm-opt-row" data-search="${si.toLowerCase()}">`;
+            html += `<button class="tm-opt tm-si-opt" data-val="${si}">${si}</button></div>`;
+        });
+
+        if (custom.length > 0) {
+            html += `<div class="tm-custom-label">⭐ Custom Sub Intents</div>`;
+            custom.forEach(si => {
+                html += `<div class="tm-opt-row" data-search="${si.toLowerCase()}">`;
+                html += `<button class="tm-opt tm-opt-custom tm-si-opt" data-val="${si}">⭐ ${si}</button>`;
+                html += `<button class="tm-del-btn tm-del-si" data-del="${si}">✕</button></div>`;
+            });
+        }
+
+        html += `<div class="tm-add-section"><div class="tm-add-label">➕ Add Custom Sub Intent for "${hva}"</div>`;
+        html += `<div class="tm-add-row"><input type="text" class="tm-add-input tm-add-si" placeholder="Type new sub-intent..." />`;
+        html += `<button class="tm-add-btn tm-add-si-btn">ADD</button></div></div>`;
+        html += `<button class="tm-back">⬅ Back to HVA List</button>`;
+        html += `<button class="tm-cancel">✖ Cancel</button>`;
+        subIntentPicker.innerHTML = html;
+
+        const searchBox = subIntentPicker.querySelector('.tm-search');
+        searchBox.addEventListener('input', function () {
+            const q = this.value.toLowerCase();
+            subIntentPicker.querySelectorAll('.tm-opt-row').forEach(r =>
+                r.classList.toggle('tm-hide', !r.dataset.search.includes(q)));
+        });
+
+        subIntentPicker.querySelector('.tm-back').addEventListener('click', renderHVAStep);
+        subIntentPicker.querySelector('.tm-cancel').addEventListener('click', hideAllPickers);
+
+        subIntentPicker.querySelectorAll('.tm-si-opt').forEach(btn => {
+            btn.addEventListener('click', function () {
+                const val = this.dataset.val;
+                debugLog('Sub-intent selected: ' + val);
+                hideAllPickers();
+                setTimeout(() => {
+                    const field = findSubIntentField();
+                    if (field) { smartFill(field, val); showToast(`✅ Sub Intent: ${val}`); }
+                    else alert('❌ Cannot find sub-intent field!');
+                }, 500);
+            });
+        });
+
+        subIntentPicker.querySelectorAll('.tm-del-si').forEach(btn => {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                const val = this.dataset.del;
+                showDeleteConfirm(val, () => {
+                    removeCustomOption('si_' + hva, val);
+                    showToast(`🗑️ Deleted: ${val}`);
+                    renderSubIntentStep(hva);
+                });
+            });
+        });
+
+        const addInput = subIntentPicker.querySelector('.tm-add-si');
+        const addBtn = subIntentPicker.querySelector('.tm-add-si-btn');
+        function addSI() {
+            const v = addInput.value.trim();
+            if (!v) return;
+            if (all.includes(v)) { showToast('⚠️ Already exists!'); return; }
+            const c = getCustomOptions('si_' + hva); c.push(v); saveCustomOptions('si_' + hva, c);
+            showToast(`✅ Added: ${v}`);
+            renderSubIntentStep(hva);
+        }
+        addBtn.addEventListener('click', addSI);
+        addInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addSI(); } });
+        setTimeout(() => searchBox.focus(), 100);
+    }
+
+    function showSubIntentPicker() {
+        overlay.style.display = 'block';
+        subIntentPicker.style.display = 'block';
+        renderHVAStep();
+    }
+
+    // ═══════════════════════════════════════════════
+    //  FIND FIELDS
+    // ═══════════════════════════════════════════════
+
+    function findSubIntentField() {
+        const selectors = [
+            'input[placeholder*="offline sub intent" i]',
+            'input[placeholder*="correct offline" i]',
+            'input[placeholder*="sub intent" i]'
+        ];
+        for (const sel of selectors) {
+            try {
+                const inp = document.querySelector(sel);
+                if (inp) return inp;
+            } catch(e) {}
+        }
+
+        const allEls = document.querySelectorAll('label, span, p, div, h3, h4, h5, h6');
+        for (const el of allEls) {
+            if (/accurate offline sub intent/i.test(el.textContent.trim())) {
+                let parent = el.parentElement;
+                for (let i = 0; i < 6; i++) {
+                    if (!parent) break;
+                    const inp = parent.querySelector('input[type="text"], input:not([type])');
+                    if (inp) return inp;
+                    parent = parent.parentElement;
+                }
+            }
+        }
+
+        const allInputs = document.querySelectorAll('input[type="text"], input:not([type])');
+        for (const inp of allInputs) {
+            const ph = (inp.placeholder || '').toLowerCase();
+            if (ph.includes('offline') || ph.includes('sub intent')) return inp;
+        }
+        return null;
+    }
+
+    function findFieldByConfig(config) {
+        try {
+            let inp = document.querySelector(`input[placeholder*="${config.fieldPlaceholder}" i]`);
+            if (inp) return inp;
+        } catch(e) {}
+
+        const allEls = document.querySelectorAll('label, span, p, div, h3, h4, h5');
+        for (const el of allEls) {
+            const t = el.textContent.trim();
+            if (t === config.fieldLabel || t === config.fieldLabel + ' *') {
+                let parent = el.parentElement;
+                for (let i = 0; i < 5; i++) {
+                    if (!parent) break;
+                    const inp = parent.querySelector('input');
+                    if (inp) return inp;
+                    parent = parent.parentElement;
+                }
+            }
+        }
+        return null;
+    }
+
+    // ═══════════════════════════════════════════════
+    //  SMART FILL (React-compatible)
+    // ═══════════════════════════════════════════════
+
+    function smartFill(input, value) {
+        debugLog('Filling → ' + value);
+        input.focus();
+        input.click();
+        setTimeout(() => {
+            const nativeSet = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value'
+            ).set;
+            nativeSet.call(input, '');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            setTimeout(() => {
+                nativeSet.call(input, value);
+                input.setAttribute('value', value);
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                setTimeout(() => {
+                    input.dispatchEvent(new Event('blur', { bubbles: true }));
+                    debugLog('✅ Filled: ' + input.value);
+                }, 200);
+            }, 100);
+        }, 100);
+    }
+
+    // ═══════════════════════════════════════════════
+    //  SHOW / HIDE HELPERS
+    // ═══════════════════════════════════════════════
+
+    function showSimplePicker(key) {
+        const { picker, searchBox } = simplePickers[key];
+        overlay.style.display = 'block';
+        picker.style.display = 'block';
+        searchBox.value = '';
+        picker.querySelectorAll('.tm-opt-row').forEach(r => r.classList.remove('tm-hide'));
+        setTimeout(() => searchBox.focus(), 100);
+    }
+
+    function hideAllPickers() {
+        overlay.style.display = 'none';
+        Object.values(simplePickers).forEach(({ picker }) => { picker.style.display = 'none'; });
+        subIntentPicker.style.display = 'none';
+    }
+
+    function showToast(msg) {
+        const t = document.createElement('div');
+        t.textContent = msg;
+        t.style.cssText = `
+            position:fixed; bottom:60px; right:15px;
+            background:#1d8102; color:#fff; padding:10px 20px;
+            border-radius:8px; font-size:13px; z-index:100002;
+            box-shadow:0 4px 12px rgba(0,0,0,0.3); font-family:Arial;
+        `;
+        document.body.appendChild(t);
+        setTimeout(() => {
+            t.style.opacity = '0'; t.style.transition = 'opacity 0.3s';
+            setTimeout(() => t.remove(), 300);
+        }, 2500);
+    }
+
+    // ═══════════════════════════════════════════════
+    //  🔥 V15: TARGETED "No" RADIO BINDING
+    //  ─────────────────────────────────────────────
+    //  Instead of listening to ALL clicks on the page,
+    //  we FIND the specific "No" radio buttons for each
+    //  question and attach listeners ONLY to those.
+    //
+    //  Uses MutationObserver + periodic scan because
+    //  React re-renders the DOM dynamically.
+    // ═══════════════════════════════════════════════
+
+    // Track which radios we've already bound
+    const boundRadios = new WeakSet();
+
+    // Debounce
+    let lastTriggerTime = 0;
+    const DEBOUNCE_MS = 2000;
+
+    /**
+     * Find the question container element by searching
+     * for its label text on the page.
+     */
+    function findQuestionContainer(labelTexts) {
+        const allEls = document.querySelectorAll(
+            'span, label, div, p, h1, h2, h3, h4, h5, h6, legend'
+        );
+
+        for (const el of allEls) {
+            const text = el.textContent.trim().toLowerCase();
+            // Element text should be SHORT (it's a label, not a huge container)
+            if (text.length > 200) continue;
+
+            for (const lt of labelTexts) {
+                if (text.includes(lt)) {
+                    debugLog(`Found label: "${el.textContent.trim().substring(0, 50)}" for "${lt}"`);
+                    return el;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * From a question label element, walk UP to find the
+     * container that holds the radio buttons, then find
+     * the "No" radio inside it.
+     */
+    function findNoRadioForQuestion(labelEl) {
+        let container = labelEl;
+
+        for (let i = 0; i < 10; i++) {
+            if (!container) return null;
+
+            // Look for radio buttons in this container
+            const radios = container.querySelectorAll('input[type="radio"]');
+
+            if (radios.length >= 2) {
+                // Found the radio group — now find the "No" one
+                for (const radio of radios) {
+                    if (radio.value === 'No') {
+                        debugLog(`✅ Found "No" radio: id="${radio.id}" name="${radio.name}"`);
+                        return radio;
+                    }
+                }
+
+                // No radio with value="No" — check by label text
+                for (const radio of radios) {
+                    const label = radio.closest('label');
+                    if (label) {
+                        const labelText = label.textContent.trim().toLowerCase();
+                        if (labelText === 'no') {
+                            debugLog(`✅ Found "No" radio by label text: id="${radio.id}"`);
+                            return radio;
+                        }
+                    }
+                }
+
+                debugLog('⚠️ Found radio group but no "No" value. Values: ' +
+                    [...radios].map(r => r.value).join(', '));
+                return null;
+            }
+
+            container = container.parentElement;
+        }
+
+        debugLog('⚠️ Could not find radio group');
+        return null;
+    }
+
+    /**
+     * Open the correct picker for a question key
+     */
+    function openPickerForQuestion(questionDef) {
+        // Debounce
+        const now = Date.now();
+        if (now - lastTriggerTime < DEBOUNCE_MS) {
+            debugLog('⏳ Debounced');
+            return;
+        }
+        lastTriggerTime = now;
+
+        // Skip if picker already open
+        if (overlay.style.display === 'block') {
+            debugLog('⏳ Picker already open');
+            return;
+        }
+
+        debugLog(`🚀 Opening picker: ${questionDef.key}`);
+
+        badge.textContent = `🟢 ${questionDef.key}: "No" clicked`;
+        badge.style.background = '#1d8102';
+        setTimeout(() => {
+            badge.style.background = '#0073bb';
+            badge.textContent = '🟢 TM v15 Active';
+        }, 3000);
+
+        setTimeout(() => {
+            if (questionDef.type === 'simple') {
+                showSimplePicker(questionDef.key);
+            } else {
+                showSubIntentPicker();
+            }
+        }, 400);
+    }
+
+    /**
+     * Bind a click/change listener to a specific "No" radio
+     */
+    function bindNoRadio(radio, questionDef) {
+        if (boundRadios.has(radio)) return; // Already bound
+        boundRadios.add(radio);
+
+        debugLog(`🔗 Binding listener: "${questionDef.key}" → radio id="${radio.id}"`);
+
+        // Listen for BOTH change and click
+        radio.addEventListener('change', function () {
+            if (this.checked && this.value === 'No') {
+                debugLog(`📻 [change] "${questionDef.key}" No selected`);
+                openPickerForQuestion(questionDef);
+            }
+        });
+
+        radio.addEventListener('click', function () {
+            if (this.value === 'No') {
+                debugLog(`🖱️ [click] "${questionDef.key}" No clicked`);
+                openPickerForQuestion(questionDef);
+            }
+        });
+
+        // Also listen on the parent label (Cloudscape wraps radios in labels)
+        const label = radio.closest('label');
+        if (label) {
+            label.addEventListener('click', function (e) {
+                // Make sure we're not double-firing from the radio itself
+                if (e.target === radio) return;
+                if (radio.value === 'No') {
+                    debugLog(`🏷️ [label click] "${questionDef.key}" No label clicked`);
+                    // Small delay to let the radio get checked
+                    setTimeout(() => {
+                        if (radio.checked) {
+                            openPickerForQuestion(questionDef);
+                        }
+                    }, 50);
+                }
+            });
+        }
+    }
+
+    /**
+     * MAIN SCAN: Find all 3 question groups and bind their "No" radios
+     */
+    function scanAndBind() {
+        let boundCount = 0;
+
+        for (const questionDef of QUESTION_MAP) {
+            const labelEl = findQuestionContainer(questionDef.labelTexts);
+            if (!labelEl) continue;
+
+            const noRadio = findNoRadioForQuestion(labelEl);
+            if (!noRadio) continue;
+
+            if (!boundRadios.has(noRadio)) {
+                bindNoRadio(noRadio, questionDef);
+                boundCount++;
+            }
+        }
+
+        if (boundCount > 0) {
+            debugLog(`✅ Bound ${boundCount} new "No" radio(s)`);
+            badge.textContent = `🟢 TM v15 — ${boundCount} bound`;
+            setTimeout(() => { badge.textContent = '🟢 TM v15 Active'; }, 2000);
+        }
+
+        return boundCount;
+    }
+
+    // ═══════════════════════════════════════════════
+    //  INITIAL SCAN + OBSERVER + PERIODIC RE-SCAN
+    // ═══════════════════════════════════════════════
+
+    // Initial scan after page settles
+    setTimeout(() => {
+        debugLog('🔍 Initial scan...');
+        const count = scanAndBind();
+        debugLog(`Initial scan: bound ${count} radios`);
+    }, 2000);
+
+    // Re-scan when DOM changes (React re-renders)
+    let scanTimeout = null;
+    const observer = new MutationObserver(() => {
+        if (scanTimeout) clearTimeout(scanTimeout);
+        scanTimeout = setTimeout(() => {
+            scanAndBind();
+        }, 1000);
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+
+    // Periodic re-scan every 5s as safety net
+    setInterval(() => {
+        scanAndBind();
+    }, 5000);
+
+    // ═══════════════════════════════════════════════
+    //  KEYBOARD SHORTCUTS
+    // ═══════════════════════════════════════════════
+
+    document.addEventListener('keydown', (e) => {
+        if (e.ctrlKey && e.shiftKey && e.key === 'L') { e.preventDefault(); showSimplePicker('llmIntent'); }
+        if (e.ctrlKey && e.shiftKey && e.key === 'K') { e.preventDefault(); showSimplePicker('llmWorkflow'); }
+        if (e.ctrlKey && e.shiftKey && e.key === 'J') { e.preventDefault(); showSubIntentPicker(); }
+        if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+            e.preventDefault();
+            debugPanel.style.display = debugPanel.style.display === 'none' ? 'block' : 'none';
+        }
+        // Force re-scan
+        if (e.ctrlKey && e.shiftKey && e.key === 'R') {
+            e.preventDefault();
+            debugLog('🔄 Manual re-scan...');
+            const count = scanAndBind();
+            showToast(`🔄 Re-scan: ${count} new bindings`);
+        }
+    });
+
+    debugLog('🚀 TM v15.0 loaded — Targeted radio binding');
+
+})();
